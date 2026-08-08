@@ -1,44 +1,36 @@
 export default {
-  async fetch(request, env) {
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Content-Type": "text/plain; charset=utf-8"
-    };
-
-    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
+  // -------------------------------------------------------------
+  // 1. Cron Trigger: 定期実行でVRChat APIを叩いてKVへ保存
+  // -------------------------------------------------------------
+  async scheduled(event, env, ctx) {
+    console.log("[Cron] VRChat status update started...");
 
     try {
+      // D1 データベースから全アカウントを取得
       const { results } = await env.DB.prepare(
         "SELECT profile_hash, user_id, auth_cookie FROM accounts"
       ).all();
 
+      if (!results || results.length === 0) {
+        console.log("[Cron] No accounts found in database.");
+        return;
+      }
+
       const outputLines = [];
-      const BATCH_SIZE = 3; // 同時リクエスト数を制限
-      const DELAY_MS = 200;  // バッチ間のウェイト時間
+      const BATCH_SIZE = 2; // レートリミット回避のため2件ずつ処理
+      const DELAY_MS = 300;  // バッチ間のウェイト（300ms）
 
       for (let i = 0; i < results.length; i += BATCH_SIZE) {
         const batch = results.slice(i, i + BATCH_SIZE);
 
         const batchResults = await Promise.all(batch.map(async (account) => {
-          const profileHashLower = account.profile_hash.toLowerCase();
-          
+          const profileHashLower = account.profile_hash ? account.profile_hash.toLowerCase() : 'unknown';
           if (!account.user_id) return `${profileHashLower}-offline`;
-
-          // 1. KVキャッシュチェック (1-3分程度キャッシュしてAPI負荷を下げる)
-          const cacheKey = `status:${account.user_id}`;
-          if (env.STATUS_CACHE) {
-            const cached = await env.STATUS_CACHE.get(cacheKey);
-            if (cached) return `${profileHashLower}-${cached}`;
-          }
 
           let status = 'offline';
           let locationInfo = '';
 
           try {
-            // 2. VRChat APIの利用規約に沿ったUser-Agent形式に変更
             const headers = {
               "User-Agent": "VRChatStatusChecker/1.0 (contact: your-email@example.com)"
             };
@@ -50,8 +42,8 @@ export default {
             const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/users/${account.user_id}`, { headers });
 
             if (vrcRes.status === 429) {
-              console.warn(`429 Rate limited for user ${account.user_id}`);
-              return `${profileHashLower}-rate_limited`;
+              console.warn(`[Cron] 429 Rate limited for user ${account.user_id}`);
+              return `${profileHashLower}-offline`;
             }
 
             if (vrcRes.ok) {
@@ -59,43 +51,88 @@ export default {
 
               if (userData.state !== "offline") {
                 status = 'online';
+                
+                // パブリックインスタンスの判定 (wrld_で始まり、プライベート系タグが含まれない)
                 const loc = userData.location || '';
                 const isPublic = loc.startsWith('wrld_') &&
                   !loc.includes('~private') &&
                   !loc.includes('~friends') &&
                   !loc.includes('~hidden');
 
-                if (isPublic) locationInfo = loc;
+                if (isPublic) {
+                  locationInfo = loc;
+                }
               }
             }
-
-            const resultStr = locationInfo ? `${status}-${locationInfo}` : status;
-
-            // Cache API結果 (120秒)
-            if (env.STATUS_CACHE) {
-              await env.STATUS_CACHE.put(cacheKey, resultStr, { expirationTtl: 120 });
-            }
-
-            return `${profileHashLower}-${resultStr}`;
-
           } catch (e) {
-            console.error(`Error fetching VRC status for ${account.profile_hash}:`, e);
-            return `${profileHashLower}-error`;
+            console.error(`[Cron] Error fetching VRC status for ${account.profile_hash}:`, e);
           }
+
+          // 返却フォーマット: "hash-online-wrld_xxx:12345" または "hash-offline"
+          return locationInfo 
+            ? `${profileHashLower}-${status}-${locationInfo}`
+            : `${profileHashLower}-${status}`;
         }));
 
         outputLines.push(...batchResults);
 
-        // バッチ間にウェイトを挟む
+        // バッチ間ウェイト
         if (i + BATCH_SIZE < results.length) {
           await new Promise(resolve => setTimeout(resolve, DELAY_MS));
         }
       }
 
-      return new Response(outputLines.join('\n'), { headers: corsHeaders });
+      // KVバインディングが存在する場合、最新のステータスを一括保存
+      if (env.STATUS_CACHE) {
+        await env.STATUS_CACHE.put("latest_status_data", outputLines.join('\n'));
+        console.log("[Cron] Cache updated successfully.");
+      } else {
+        console.error("[Cron] Error: STATUS_CACHE KV binding is missing.");
+      }
 
     } catch (error) {
-      console.error("Worker Error:", error);
+      console.error("[Cron] Scheduled handler error:", error);
+    }
+  },
+
+  // -------------------------------------------------------------
+  // 2. HTTP Fetch: フロントエンドにはKVから超高速応答するのみ
+  // -------------------------------------------------------------
+  async fetch(request, env, ctx) {
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Content-Type": "text/plain; charset=utf-8"
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    if (request.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
+    }
+
+    try {
+      if (!env.STATUS_CACHE) {
+        return new Response("KV Binding Error: STATUS_CACHE not configured", { status: 500, headers: corsHeaders });
+      }
+
+      // KVからキャッシュ済みの文字列を取得 (VRChat APIへのリクエストは一切発生しない)
+      const cachedData = await env.STATUS_CACHE.get("latest_status_data");
+
+      if (cachedData === null) {
+        return new Response("Data not ready yet (Waiting for first Cron execution)", { status: 503, headers: corsHeaders });
+      }
+
+      return new Response(cachedData, {
+        status: 200,
+        headers: corsHeaders
+      });
+
+    } catch (error) {
+      console.error("[Fetch] Worker Error:", error);
       return new Response("Internal Server Error", { status: 500, headers: corsHeaders });
     }
   }
