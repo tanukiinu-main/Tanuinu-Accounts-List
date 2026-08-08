@@ -38,7 +38,8 @@ export default {
               headers["Cookie"] = `auth=${account.auth_cookie}`;
             }
 
-            const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/profile/${account.user_id}/private`, { headers });
+            // auth/user または profile/private をコール
+            const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/auth/user`, { headers });
 
             if (vrcRes.status === 429) {
               console.warn(`[Cron] 429 Rate limited for user ${account.user_id}`);
@@ -51,16 +52,16 @@ export default {
               const activity = userData.activity || {};
               const presence = userData.presence || {};
 
-              // 生の state を取得
-              status = activity.state || userData.state || 'offline';
+              // ステータスの正確な判定 (presence.status -> activity.state -> userData.state)
+              status = presence.status || activity.state || userData.state || 'offline';
 
               // 生の location を一切フィルターせずにそのまま取得
-              rawLocation = activity.location || '';
-              if (!rawLocation && presence.world && presence.instance) {
+              if (presence.world && presence.instance) {
                 rawLocation = `${presence.world}:${presence.instance}`;
-              }
-              if (!rawLocation) {
-                rawLocation = userData.location || '';
+              } else if (activity.location) {
+                rawLocation = activity.location;
+              } else if (userData.location) {
+                rawLocation = userData.location;
               }
             }
           } catch (e) {
