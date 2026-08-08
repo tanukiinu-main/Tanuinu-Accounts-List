@@ -1,4 +1,7 @@
 export default {
+  // -------------------------------------------------------------
+  // 1. Cron Trigger: VRChat APIから無加工でデータを取得してKV保存
+  // -------------------------------------------------------------
   async scheduled(event, env, ctx) {
     console.log("[Cron] VRChat status update started...");
 
@@ -24,7 +27,7 @@ export default {
           if (!account.user_id) return `${profileHashLower},offline,`;
 
           let status = 'offline';
-          let locationInfo = '';
+          let rawLocation = '';
 
           try {
             const headers = {
@@ -45,46 +48,27 @@ export default {
             if (vrcRes.ok) {
               const userData = await vrcRes.json();
 
-              // ネストされた activity や presence、または直下から state と location を取得
               const activity = userData.activity || {};
               const presence = userData.presence || {};
 
-              // state の判定 (activity.state -> userData.state の順で参照)
-              const rawState = activity.state || userData.state || 'offline';
-              const isOnline = rawState !== 'offline';
+              // 生の state を取得
+              status = activity.state || userData.state || 'offline';
 
-              if (isOnline) {
-                status = 'online';
-
-                // location の取得 (activity.location -> presence 構築 -> userData.location の順)
-                let loc = activity.location || '';
-                
-                if (!loc && presence.world && presence.instance) {
-                  loc = `${presence.world}:${presence.instance}`;
-                }
-                
-                if (!loc) {
-                  loc = userData.location || '';
-                }
-
-                // パブリックインスタンス判定
-                const isPublic = typeof loc === 'string' &&
-                  loc.startsWith('wrld_') &&
-                  !loc.includes('~private') &&
-                  !loc.includes('~friends') &&
-                  !loc.includes('~hidden') &&
-                  !loc.includes('~group');
-
-                if (isPublic) {
-                  locationInfo = loc;
-                }
+              // 生の location を一切フィルターせずにそのまま取得
+              rawLocation = activity.location || '';
+              if (!rawLocation && presence.world && presence.instance) {
+                rawLocation = `${presence.world}:${presence.instance}`;
+              }
+              if (!rawLocation) {
+                rawLocation = userData.location || '';
               }
             }
           } catch (e) {
             console.error(`[Cron] Error fetching VRC status for ${account.profile_hash}:`, e);
           }
 
-          return `${profileHashLower},${status},${locationInfo}`;
+          // フィルターなしで無加工出力: "hash,state,raw_location"
+          return `${profileHashLower},${status},${rawLocation}`;
         }));
 
         outputLines.push(...batchResults);
@@ -106,6 +90,9 @@ export default {
     }
   },
 
+  // -------------------------------------------------------------
+  // 2. HTTP Fetch: KVから無加工データをそのまま返却
+  // -------------------------------------------------------------
   async fetch(request, env, ctx) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
