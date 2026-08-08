@@ -1,6 +1,5 @@
 export default {
   async fetch(request, env) {
-    // CORS ヘッダー設定
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -8,7 +7,6 @@ export default {
       "Content-Type": "text/plain; charset=utf-8"
     };
 
-    // OPTIONS リクエスト（Preflight）の処理
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
@@ -18,16 +16,14 @@ export default {
     }
 
     try {
-      // D1 データベースから指定のカラム名で取得
       const { results } = await env.DB.prepare(
         "SELECT profile_hash, user_id, auth_cookie FROM accounts"
       ).all();
 
-      const outputLines = [];
-
-      // 各アカウントの VRChat ステータスを取得
-      for (const account of results) {
-        let isOnline = false;
+      // 各アカウントのVRChat APIリクエストを並列実行（高速化）
+      const outputLines = await Promise.all(results.map(async (account) => {
+        let status = 'offline';
+        let locationInfo = '';
 
         if (account.user_id) {
           try {
@@ -35,7 +31,6 @@ export default {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VRChatStatusChecker/1.0"
             };
 
-            // auth_cookie が存在する場合は認証Cookieを付与
             if (account.auth_cookie) {
               headers["Cookie"] = `auth=${account.auth_cookie}`;
             }
@@ -46,17 +41,34 @@ export default {
 
             if (vrcRes.ok) {
               const userData = await vrcRes.json();
-              // offline 以外のステータス（active, join me など）をオンラインとみなす
-              isOnline = userData.state !== "offline";
+              
+              if (userData.state !== "offline") {
+                status = 'online';
+                
+                // パブリックインスタンスの判定
+                // (locationが wrld_ で始まり、private / friends / hidden などの制限が含まれない)
+                const loc = userData.location || '';
+                const isPublic = loc.startsWith('wrld_') && 
+                                 !loc.includes('~private') && 
+                                 !loc.includes('~friends') && 
+                                 !loc.includes('~hidden');
+
+                if (isPublic) {
+                  // "wrld_xxx:12345" などの文字列を抽出
+                  locationInfo = loc;
+                }
+              }
             }
           } catch (e) {
-            console.error(`Error fetching VRC status for profile_hash ${account.profile_hash}:`, e);
+            console.error(`Error fetching VRC status for ${account.profile_hash}:`, e);
           }
         }
 
-        // user_id や email は露出させず、profile_hash とオンライン判定のみを出力
-        outputLines.push(`${account.profile_hash.toLowerCase()}-${isOnline ? 'online' : 'offline'}`);
-      }
+        // 返却フォーマット: "hash-online-wrld_xxx:12345" または "hash-offline"
+        return locationInfo 
+          ? `${account.profile_hash.toLowerCase()}-${status}-${locationInfo}`
+          : `${account.profile_hash.toLowerCase()}-${status}`;
+      }));
 
       return new Response(outputLines.join('\n'), {
         headers: corsHeaders
