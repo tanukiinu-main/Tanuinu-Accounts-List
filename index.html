@@ -206,7 +206,7 @@
             const accountData = workerStatusData.get(cleanHash) || { status: 'offline', location: '' };
             const isOnline = accountData.status === 'online';
 
-            // 【判定変更】管理者モードなら全データを無条件表示、一般モードはハッシュ一致時のみワールド情報を解禁
+            // 管理者モードなら全データを表示、一般モードはハッシュ一致時のみワールド情報を解禁
             const showWorldInfo = (isAdminMode || isMatched) && isOnline && accountData.location !== '';
 
             const li = document.createElement('li');
@@ -232,15 +232,15 @@
             const response = await fetch(WORKER_URL);
             
             if (!response.ok) {
-                // HTTPエラー（503, 500, 404など）が発生した場合
                 throw new Error(`${response.status}`);
             }
 
             const textData = await response.text();
             workerStatusData.clear();
 
+            // カンマ区切り（,）で各レコードを安全に分割してパース
             textData.split('\n').forEach(line => {
-                const parts = line.trim().split('-');
+                const parts = line.trim().split(',');
                 if (parts.length >= 2) {
                     const hash = parts[0].toLowerCase();
                     const status = parts[1].toLowerCase();
@@ -253,7 +253,6 @@
             const timeStr = new Date().toLocaleTimeString();
             statusEl.textContent = `最終更新: ${timeStr}`;
             
-            // 下部テロップを成功表示に更新
             updateTicker(true, `最終更新: ${timeStr}`);
             renderList();
         } catch (error) {
@@ -261,7 +260,6 @@
             const errCode = error.message || "NetworkError";
             statusEl.textContent = 'データの取得に失敗しました。';
             
-            // 下部テロップに「ERROR: {エラー数値}」を表示
             updateTicker(false, errCode);
         }
     }
