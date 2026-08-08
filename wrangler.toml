@@ -16,3 +16,7 @@ database_id = "9214190c-c6a9-4514-869c-a470714874cc"
 [[kv_namespaces]]
 binding = "STATUS_CACHE"
 id = "d63d7d4a5fd44df2bdd99fbf9aa7d856"
+
+[observability.logs]
+enabled = false
+invocation_logs = true
