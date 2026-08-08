@@ -2,12 +2,57 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>全アカウントの稼働状況</title>
     <style>
-        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
-        ul { list-style: none; padding: 0; }
-        li { display: flex; justify-content: space-between; align-items: center; padding: 12px; margin-bottom: 8px; background: #2a2a2a; border-radius: 6px; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: sans-serif;
+            background: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px 20px 70px 20px; /* 下部バー(50px)の被りを防ぐ余白 */
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 8px;
+            position: relative;
+        }
+
+        /* 右上 管理者モードボタン */
+        .admin-header-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 6px 12px;
+            background: #333;
+            color: #aaa;
+            border: 1px solid #555;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+        }
+        .admin-header-btn:hover { background: #444; color: #fff; }
+        .admin-header-btn.active {
+            background: #d32f2f;
+            color: #fff;
+            border-color: #f44336;
+        }
+
+        ul { list-style: none; padding: 0; margin: 0; }
+        li {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #2a2a2a;
+            border-radius: 6px;
+        }
         
         .account-name { font-size: 0.85rem; word-break: break-all; font-family: monospace; color: #aaa; }
         .matched-name { color: #4fc3f7; font-weight: bold; font-family: sans-serif; font-size: 1rem; }
@@ -18,7 +63,15 @@
         .offline { background: #c62828; }
         
         /* ワールド・インスタンスID表示用スタイル */
-        .world-info { font-size: 0.75rem; background: #333; color: #81c784; padding: 3px 8px; border-radius: 4px; border: 1px solid #455a64; font-family: monospace; }
+        .world-info {
+            font-size: 0.75rem;
+            background: #333;
+            color: #81c784;
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #455a64;
+            font-family: monospace;
+        }
 
         #status { font-size: 0.85rem; color: #888; margin-bottom: 15px; }
         
@@ -26,12 +79,58 @@
         .auth-box input { flex: 1; padding: 8px 12px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #fff; }
         .auth-box button { padding: 8px 16px; background: #1976d2; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .auth-box button:hover { background: #1565c0; }
+
+        /* 管理者バッジ */
+        .admin-banner {
+            background: #b71c1c;
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+            display: none;
+        }
+
+        /* 下部 50px 流れるステータスバー */
+        .ticker-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 50px;
+            background: #0a0a0a;
+            border-top: 1px solid #333;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            z-index: 9999;
+        }
+        .ticker-content {
+            display: inline-block;
+            white-space: nowrap;
+            padding-left: 100%;
+            animation: marquee 20s linear infinite;
+            font-family: monospace;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+        .ticker-success { color: #66bb6a; }
+        .ticker-error { color: #ef5350; }
+
+        @keyframes marquee {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(-100%, 0); }
+        }
     </style>
 </head>
 <body>
 
 <div class="container">
+    <button id="admin-btn" class="admin-header-btn">管理者</button>
     <h2>アカウント稼働状況</h2>
+
+    <div id="admin-banner" class="admin-banner">🔓 管理者モード有効中（全VRChat取得データ表示）</div>
 
     <div class="auth-box">
         <input type="text" id="name-input" placeholder="自分のユーザー名を入力">
@@ -42,8 +141,16 @@
     <ul id="user-list"></ul>
 </div>
 
+<!-- 下部 50px テロップ -->
+<div class="ticker-bar">
+    <div id="ticker-text" class="ticker-content ticker-success">STATUS: 初期化中...</div>
+</div>
+
 <script>
     const WORKER_URL = "https://tanuinu-accounts-list.hikinikutanuki1.workers.dev";
+    
+    // 指定された管理者パスワードのSHA-256ハッシュ値
+    const ADMIN_PASS_HASH = "d96161ec9f766bf4bc0b6f6c48b83484051a711db531b160e89b2f50692d319b";
 
     const HASH_LIST = [
         "d34f21e44432ff6f781d8476045e7f2776aefb7ccc3fddffe98e9114641a2768",
@@ -54,6 +161,9 @@
         "a53b46b5fa0d113c8054535c0404a043f5734723700825f0341adbf81cff13b9"
     ];
 
+    let isAdminMode = false;
+    let workerStatusData = new Map();
+
     async function getSha256(text) {
         const encoder = new TextEncoder();
         const data = encoder.encode(text);
@@ -63,7 +173,16 @@
             .join('');
     }
 
-    let workerStatusData = new Map();
+    function updateTicker(isSuccess, message) {
+        const tickerEl = document.getElementById('ticker-text');
+        if (isSuccess) {
+            tickerEl.className = 'ticker-content ticker-success';
+            tickerEl.textContent = `SUCCESS: 正常にデータを取得しました (${message})`;
+        } else {
+            tickerEl.className = 'ticker-content ticker-error';
+            tickerEl.textContent = `ERROR: ${message}`;
+        }
+    }
 
     async function renderList() {
         const userListEl = document.getElementById('user-list');
@@ -84,12 +203,11 @@
             
             const displayName = isMatched ? hashName : cleanHash;
             
-            // Workerからのレスポンスオブジェクトを取得 { status: 'online', location: 'wrld_xxx:12345' }
             const accountData = workerStatusData.get(cleanHash) || { status: 'offline', location: '' };
             const isOnline = accountData.status === 'online';
 
-            // 解読済み かつ パブリックインスタンス情報が存在する場合のみ表示
-            const showWorldInfo = isMatched && isOnline && accountData.location !== '';
+            // 【判定変更】管理者モードなら全データを無条件表示、一般モードはハッシュ一致時のみワールド情報を解禁
+            const showWorldInfo = (isAdminMode || isMatched) && isOnline && accountData.location !== '';
 
             const li = document.createElement('li');
             li.innerHTML = `
@@ -112,7 +230,11 @@
         const statusEl = document.getElementById('status');
         try {
             const response = await fetch(WORKER_URL);
-            if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+            
+            if (!response.ok) {
+                // HTTPエラー（503, 500, 404など）が発生した場合
+                throw new Error(`${response.status}`);
+            }
 
             const textData = await response.text();
             workerStatusData.clear();
@@ -122,17 +244,52 @@
                 if (parts.length >= 2) {
                     const hash = parts[0].toLowerCase();
                     const status = parts[1].toLowerCase();
-                    const location = parts[2] || ''; // 3番目の要素（存在する場合）が location
+                    const location = parts[2] || '';
                     
                     workerStatusData.set(hash, { status, location });
                 }
             });
 
-            statusEl.textContent = `最終更新: ${new Date().toLocaleTimeString()}`;
+            const timeStr = new Date().toLocaleTimeString();
+            statusEl.textContent = `最終更新: ${timeStr}`;
+            
+            // 下部テロップを成功表示に更新
+            updateTicker(true, `最終更新: ${timeStr}`);
             renderList();
         } catch (error) {
             console.error(error);
+            const errCode = error.message || "NetworkError";
             statusEl.textContent = 'データの取得に失敗しました。';
+            
+            // 下部テロップに「ERROR: {エラー数値}」を表示
+            updateTicker(false, errCode);
+        }
+    }
+
+    // 管理者モード切替処理
+    async function toggleAdminMode() {
+        if (isAdminMode) {
+            isAdminMode = false;
+            document.getElementById('admin-btn').classList.remove('active');
+            document.getElementById('admin-btn').textContent = '管理者';
+            document.getElementById('admin-banner').style.display = 'none';
+            renderList();
+            return;
+        }
+
+        const password = prompt("管理者パスワードを入力してください:");
+        if (!password) return;
+
+        const inputHash = await getSha256(password);
+        if (inputHash === ADMIN_PASS_HASH) {
+            isAdminMode = true;
+            document.getElementById('admin-btn').classList.add('active');
+            document.getElementById('admin-btn').textContent = '管理者ログアウト';
+            document.getElementById('admin-banner').style.display = 'block';
+            alert("管理者モードでログインしました。全VRChat情報を表示します。");
+            renderList();
+        } else {
+            alert("パスワードが正しくありません。");
         }
     }
 
@@ -146,6 +303,7 @@
 
         const nameInput = document.getElementById('name-input');
         const authBtn = document.getElementById('auth-btn');
+        const adminBtn = document.getElementById('admin-btn');
 
         const handleAuth = () => {
             const currentVal = nameInput.value.trim();
@@ -156,6 +314,8 @@
         nameInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') handleAuth();
         });
+
+        adminBtn.addEventListener('click', toggleAdminMode);
     }
 
     init();
