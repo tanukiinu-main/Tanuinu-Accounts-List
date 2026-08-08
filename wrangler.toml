@@ -14,5 +14,5 @@ database_id = "9214190c-c6a9-4514-869c-a470714874cc"
 
 # キャッシュ用 KV Namespace の設定
 [[kv_namespaces]]
-binding = "STATUS_CACHE"
-id = "YOUR_KV_NAMESPACE_ID"
+binding = "vrchat-status-db"
+id = "0d4fdf8b1974481b8f45fc5675360e2e"
