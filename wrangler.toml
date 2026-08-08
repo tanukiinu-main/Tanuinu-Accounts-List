@@ -1,0 +1,11 @@
+name = "tanuinu-accounts-list"
+main = "index.js"
+compatibility_date = "2026-08-08"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vrchat-status-db"
+database_id = "YOUR_DATABASE_ID"
+
+[triggers]
+crons = ["* * * * *"]
