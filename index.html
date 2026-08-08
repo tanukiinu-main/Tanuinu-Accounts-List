@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>全アカウントの稼働状況</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        ul { list-style: none; padding: 0; }
+        li { display: flex; justify-content: space-between; align-items: center; padding: 12px; margin-bottom: 8px; background: #2a2a2a; border-radius: 6px; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #fff; }
+        .online { background: #2e7d32; }
+        .offline { background: #c62828; }
+        #status { font-size: 0.85rem; color: #888; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>アカウント稼働状況</h2>
+    <div id="status">読み込み中...</div>
+    <ul id="user-list"></ul>
+</div>
+
+<script>
+    const WORKER_URL = "https://tanuinu-accounts-list.hikinikutanuki1.workers.dev";
+
+    // 【重要】ソースコードには計算済みのSHA-256ハッシュ値だけを上から順(ID001, ID002...)に記載
+    // 本名は一切書きません！
+    const HASH_LIST = [
+        "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3", // ID001のハッシュ
+        "b3a8e0e1f9ab1bfe3a36f231f676f78bb30a519d2b21e6c530c0eeee8ebb4a5d", // ID002のハッシュ
+        "c775e7b757ede630cd0aa1113bd12c9334b883018610d7e3cd97d91d43a8bce6"  // ID003のハッシュ
+    ];
+
+    // SHA-256計算関数
+    async function getSha256(text) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(text);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+        return Array.from(new Uint8Array(hashBuffer))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+    }
+
+    async function main() {
+        const statusEl = document.getElementById('status');
+        const userListEl = document.getElementById('user-list');
+
+        // URLの末尾（#の後ろ）から自分の「生のユーザー名」を取得
+        // 例: https://site.com/#UserA_VRC
+        const rawInputName = decodeURIComponent(window.location.hash.replace('#', '').trim());
+        
+        // 入力された名前のハッシュを計算（何も入力されていない場合は空）
+        const myInputHash = rawInputName ? await getSha256(rawInputName) : '';
+
+        // アカウント情報の初期化
+        const accountsMap = new Map();
+        HASH_LIST.forEach((hash, index) => {
+            const idNum = String(index + 1).padStart(3, '0');
+            const idKey = `ID${idNum}`;
+            
+            // ハッシュが一致したらURLに入力されていた名前、違えば[匿名アカウントXXX]
+            const isMatched = (myInputHash !== '' && myInputHash === hash.toLowerCase());
+            const displayName = isMatched ? rawInputName : `[匿名アカウント${idNum}]`;
+
+            accountsMap.set(idKey, {
+                displayName: displayName,
+                status: 'offline'
+            });
+        });
+
+        // Cloudflare Workers からデータ取得
+        try {
+            const response = await fetch(WORKER_URL);
+            if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+
+            const textData = await response.text();
+            
+            // "ID001-online\nID002-offline" の形式をパース
+            textData.split('\n').forEach(line => {
+                const [id, status] = line.trim().split('-');
+                if (id && status && accountsMap.has(id)) {
+                    accountsMap.get(id).status = status.toLowerCase();
+                }
+            });
+
+            statusEl.textContent = `最終更新: ${new Date().toLocaleTimeString()}`;
+        } catch (error) {
+            console.error(error);
+            statusEl.textContent = 'データの取得に失敗しました。';
+        }
+
+        // 画面描画
+        const fragment = document.createDocumentFragment();
+        accountsMap.forEach(acc => {
+            const li = document.createElement('li');
+            const isOnline = acc.status === 'online';
+            li.innerHTML = `
+                <span>${acc.displayName}</span>
+                <span class="badge ${isOnline ? 'online' : 'offline'}">
+                    ${isOnline ? 'オンライン' : 'オフライン'}
+                </span>
+            `;
+            fragment.appendChild(li);
+        });
+
+        userListEl.innerHTML = '';
+        userListEl.appendChild(fragment);
+    }
+
+    main();
+</script>
+
+</body>
+</html>
