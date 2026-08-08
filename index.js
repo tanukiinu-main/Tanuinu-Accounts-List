@@ -1,12 +1,8 @@
 export default {
-  // -------------------------------------------------------------
-  // 1. Cron Trigger: 定期実行でVRChat APIを叩いてKVへ保存
-  // -------------------------------------------------------------
   async scheduled(event, env, ctx) {
     console.log("[Cron] VRChat status update started...");
 
     try {
-      // D1 データベースから全アカウントを取得
       const { results } = await env.DB.prepare(
         "SELECT profile_hash, user_id, auth_cookie FROM accounts"
       ).all();
@@ -17,8 +13,8 @@ export default {
       }
 
       const outputLines = [];
-      const BATCH_SIZE = 2; // レートリミット回避のため2件ずつ処理
-      const DELAY_MS = 300;  // バッチ間のウェイト（300ms）
+      const BATCH_SIZE = 2;
+      const DELAY_MS = 300;
 
       for (let i = 0; i < results.length; i += BATCH_SIZE) {
         const batch = results.slice(i, i + BATCH_SIZE);
@@ -32,14 +28,13 @@ export default {
 
           try {
             const headers = {
-              "User-Agent": "VRChatStatusChecker/1.0 (contact: your-email@example.com)"
+              "User-Agent": "VRCMU/1.0 (VRChat private profile client)"
             };
 
             if (account.auth_cookie) {
               headers["Cookie"] = `auth=${account.auth_cookie}`;
             }
 
-            // profile/.../private エンドポイントを実行
             const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/profile/${account.user_id}/private`, { headers });
 
             if (vrcRes.status === 429) {
@@ -50,16 +45,29 @@ export default {
             if (vrcRes.ok) {
               const userData = await vrcRes.json();
 
-              // オンライン判定 (state / status / presence のチェック)
-              const isOnline = userData.state && userData.state !== "offline";
+              // ネストされた activity や presence、または直下から state と location を取得
+              const activity = userData.activity || {};
+              const presence = userData.presence || {};
+
+              // state の判定 (activity.state -> userData.state の順で参照)
+              const rawState = activity.state || userData.state || 'offline';
+              const isOnline = rawState !== 'offline';
 
               if (isOnline) {
                 status = 'online';
 
-                // location または presence.location から取得
-                const loc = userData.location || (userData.presence && userData.presence.location) || '';
+                // location の取得 (activity.location -> presence 構築 -> userData.location の順)
+                let loc = activity.location || '';
+                
+                if (!loc && presence.world && presence.instance) {
+                  loc = `${presence.world}:${presence.instance}`;
+                }
+                
+                if (!loc) {
+                  loc = userData.location || '';
+                }
 
-                // パブリックインスタンス判定 (wrld_で始まり、非公開タグが含まれない)
+                // パブリックインスタンス判定
                 const isPublic = typeof loc === 'string' &&
                   loc.startsWith('wrld_') &&
                   !loc.includes('~private') &&
@@ -76,19 +84,16 @@ export default {
             console.error(`[Cron] Error fetching VRC status for ${account.profile_hash}:`, e);
           }
 
-          // CSV形式 (hash,status,location) で返却
           return `${profileHashLower},${status},${locationInfo}`;
         }));
 
         outputLines.push(...batchResults);
 
-        // バッチ間ウェイト
         if (i + BATCH_SIZE < results.length) {
           await new Promise(resolve => setTimeout(resolve, DELAY_MS));
         }
       }
 
-      // KVバインディングが存在する場合、最新のステータスを一括保存
       if (env.STATUS_CACHE) {
         await env.STATUS_CACHE.put("latest_status_data", outputLines.join('\n'));
         console.log("[Cron] Cache updated successfully.");
@@ -101,9 +106,6 @@ export default {
     }
   },
 
-  // -------------------------------------------------------------
-  // 2. HTTP Fetch: フロントエンドにはKVから超高速応答するのみ
-  // -------------------------------------------------------------
   async fetch(request, env, ctx) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
@@ -125,7 +127,6 @@ export default {
         return new Response("KV Binding Error: STATUS_CACHE not configured", { status: 500, headers: corsHeaders });
       }
 
-      // KVからキャッシュ済みの文字列を取得
       const cachedData = await env.STATUS_CACHE.get("latest_status_data");
 
       if (cachedData === null) {
