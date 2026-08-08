@@ -1,121 +1,70 @@
 export default {
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(updateAllAccountsStatus(env));
-  },
-
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
+    // CORS ヘッダー設定
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
+      "Content-Type": "text/plain; charset=utf-8"
     };
 
+    // OPTIONS リクエスト（Preflight）の処理
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
 
-    if (request.method === "GET") {
-      try {
-        const { results } = await env.DB.prepare(
-          "SELECT id, status FROM statuses ORDER BY id ASC"
-        ).all();
-
-        const statusLines = results.map((row) => `${row.id}-${row.status}`);
-
-        return new Response(statusLines.join("\n"), {
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "text/plain;charset=UTF-8",
-            "Cache-Control": "no-cache",
-          },
-        });
-      } catch (error) {
-        return new Response("D1 Read Error", { status: 500, headers: corsHeaders });
-      }
+    if (request.method !== "GET") {
+      return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
     }
 
-    if (request.method === "POST") {
-      const summary = await updateAllAccountsStatus(env);
-      return new Response(JSON.stringify(summary), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    try {
+      // D1 データベースから指定のカラム名で取得
+      const { results } = await env.DB.prepare(
+        "SELECT profile_hash, user_id, auth_cookie FROM accounts"
+      ).all();
 
-    return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
-  },
-};
+      const outputLines = [];
 
-// 指定ミリ秒待機するヘルパー関数
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      // 各アカウントの VRChat ステータスを取得
+      for (const account of results) {
+        let isOnline = false;
 
-async function updateAllAccountsStatus(env) {
-  try {
-    const { results: accounts } = await env.DB.prepare(
-      "SELECT user_id, auth_cookie, email FROM accounts"
-    ).all();
+        if (account.user_id) {
+          try {
+            const headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VRChatStatusChecker/1.0"
+            };
 
-    if (!accounts || accounts.length === 0) {
-      return { success: true, updatedCount: 0 };
-    }
+            // auth_cookie が存在する場合は認証Cookieを付与
+            if (account.auth_cookie) {
+              headers["Cookie"] = `auth=${account.auth_cookie}`;
+            }
 
-    let updatedCount = 0;
+            const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/users/${account.user_id}`, {
+              headers: headers
+            });
 
-    for (const acc of accounts) {
-      let success = false;
-      let retries = 0;
-      const maxRetries = 2; // 429時のリトライ上限
-
-      while (!success && retries <= maxRetries) {
-        try {
-          const vrchatRes = await fetch(`https://api.vrchat.cloud/api/1/users/${acc.user_id}`, {
-            headers: {
-              "User-Agent": `TanuinuAccountsList/1.0 (${acc.email})`,
-              "Cookie": `auth=${acc.auth_cookie}`,
-            },
-          });
-
-          // 429 (Too Many Requests) が返ってきた場合
-          if (vrchatRes.status === 429) {
-            console.warn(`429 Too Many Requests on ${acc.user_id}. Waiting 8 seconds...`);
-            await sleep(8000); // 8秒待機して再試行
-            retries++;
-            continue;
+            if (vrcRes.ok) {
+              const userData = await vrcRes.json();
+              // offline 以外のステータス（active, join me など）をオンラインとみなす
+              isOnline = userData.state !== "offline";
+            }
+          } catch (e) {
+            console.error(`Error fetching VRC status for profile_hash ${account.profile_hash}:`, e);
           }
-
-          if (vrchatRes.ok) {
-            const userData = await vrchatRes.json();
-            const currentStatus = userData.state || userData.status || "offline";
-
-            await env.DB.prepare(
-              `INSERT INTO statuses (id, status, updated_at) 
-               VALUES (?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(id) DO UPDATE SET 
-                 status = excluded.status,
-                 updated_at = CURRENT_TIMESTAMP`
-            )
-              .bind(acc.user_id, currentStatus)
-              .run();
-
-            updatedCount++;
-            success = true;
-          } else {
-            console.error(`VRChat API Error (${acc.user_id}): HTTP ${vrchatRes.status}`);
-            break; // 429以外のエラー（401 Unauthorized等）はリトライせずスキップ
-          }
-        } catch (err) {
-          console.error(`Request Failed for ${acc.user_id}:`, err);
-          break;
         }
+
+        // user_id や email は露出させず、profile_hash とオンライン判定のみを出力
+        outputLines.push(`${account.profile_hash.toLowerCase()}-${isOnline ? 'online' : 'offline'}`);
       }
 
-      // レート制限回避のため、次のアカウント処理まで 800ms 待機（1分間でちょうど60件処理できるペース）
-      await sleep(800);
-    }
+      return new Response(outputLines.join('\n'), {
+        headers: corsHeaders
+      });
 
-    console.log(`Update complete: ${updatedCount}/${accounts.length}`);
-    return { success: true, updatedCount, total: accounts.length };
-  } catch (error) {
-    console.error("Batch update error:", error);
-    return { success: false, error: error.message };
+    } catch (error) {
+      console.error("Worker Error:", error);
+      return new Response("Internal Server Error", { status: 500, headers: corsHeaders });
+    }
   }
-}
+};
