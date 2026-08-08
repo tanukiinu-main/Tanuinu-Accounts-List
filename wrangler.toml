@@ -5,7 +5,7 @@ compatibility_date = "2026-08-08"
 [[d1_databases]]
 binding = "DB"
 database_name = "vrchat-status-db"
-database_id = "YOUR_DATABASE_ID"
+database_id = "9214190c-c6a9-4514-869c-a470714874cc"
 
 [triggers]
 crons = ["* * * * *"]
