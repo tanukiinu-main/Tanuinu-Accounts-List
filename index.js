@@ -25,7 +25,7 @@ export default {
 
         const batchResults = await Promise.all(batch.map(async (account) => {
           const profileHashLower = account.profile_hash ? account.profile_hash.toLowerCase() : 'unknown';
-          if (!account.user_id) return `${profileHashLower}-offline`;
+          if (!account.user_id) return `${profileHashLower},offline,`;
 
           let status = 'offline';
           let locationInfo = '';
@@ -39,25 +39,33 @@ export default {
               headers["Cookie"] = `auth=${account.auth_cookie}`;
             }
 
-            const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/users/${account.user_id}`, { headers });
+            // profile/.../private エンドポイントを実行
+            const vrcRes = await fetch(`https://api.vrchat.cloud/api/1/profile/${account.user_id}/private`, { headers });
 
             if (vrcRes.status === 429) {
               console.warn(`[Cron] 429 Rate limited for user ${account.user_id}`);
-              return `${profileHashLower}-offline`;
+              return `${profileHashLower},offline,`;
             }
 
             if (vrcRes.ok) {
               const userData = await vrcRes.json();
 
-              if (userData.state !== "offline") {
+              // オンライン判定 (state / status / presence のチェック)
+              const isOnline = userData.state && userData.state !== "offline";
+
+              if (isOnline) {
                 status = 'online';
-                
-                // パブリックインスタンスの判定 (wrld_で始まり、プライベート系タグが含まれない)
-                const loc = userData.location || '';
-                const isPublic = loc.startsWith('wrld_') &&
+
+                // location または presence.location から取得
+                const loc = userData.location || (userData.presence && userData.presence.location) || '';
+
+                // パブリックインスタンス判定 (wrld_で始まり、非公開タグが含まれない)
+                const isPublic = typeof loc === 'string' &&
+                  loc.startsWith('wrld_') &&
                   !loc.includes('~private') &&
                   !loc.includes('~friends') &&
-                  !loc.includes('~hidden');
+                  !loc.includes('~hidden') &&
+                  !loc.includes('~group');
 
                 if (isPublic) {
                   locationInfo = loc;
@@ -68,10 +76,8 @@ export default {
             console.error(`[Cron] Error fetching VRC status for ${account.profile_hash}:`, e);
           }
 
-          // 返却フォーマット: "hash-online-wrld_xxx:12345" または "hash-offline"
-          return locationInfo 
-            ? `${profileHashLower}-${status}-${locationInfo}`
-            : `${profileHashLower}-${status}`;
+          // CSV形式 (hash,status,location) で返却
+          return `${profileHashLower},${status},${locationInfo}`;
         }));
 
         outputLines.push(...batchResults);
@@ -119,7 +125,7 @@ export default {
         return new Response("KV Binding Error: STATUS_CACHE not configured", { status: 500, headers: corsHeaders });
       }
 
-      // KVからキャッシュ済みの文字列を取得 (VRChat APIへのリクエストは一切発生しない)
+      // KVからキャッシュ済みの文字列を取得
       const cachedData = await env.STATUS_CACHE.get("latest_status_data");
 
       if (cachedData === null) {
