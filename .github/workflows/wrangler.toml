@@ -1,0 +1,4 @@
+[[d1_databases]]
+binding = "DB"
+database_name = "vrchat-status-db"
+database_id = "9214190c-c6a9-4514-869c-a470714874cc"
