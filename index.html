@@ -5,28 +5,42 @@
     <title>全アカウントの稼働状況</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        .container { max-width: 700px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
         ul { list-style: none; padding: 0; }
         li { display: flex; justify-content: space-between; align-items: center; padding: 12px; margin-bottom: 8px; background: #2a2a2a; border-radius: 6px; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #fff; }
+        
+        .account-name { font-size: 0.85rem; word-break: break-all; font-family: monospace; color: #aaa; }
+        .matched-name { color: #4fc3f7; font-weight: bold; font-family: sans-serif; font-size: 1rem; }
+
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #fff; flex-shrink: 0; margin-left: 10px; }
         .online { background: #2e7d32; }
         .offline { background: #c62828; }
         #status { font-size: 0.85rem; color: #888; margin-bottom: 15px; }
+        
+        .auth-box { display: flex; gap: 8px; margin-bottom: 20px; }
+        .auth-box input { flex: 1; padding: 8px 12px; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; color: #fff; }
+        .auth-box button { padding: 8px 16px; background: #1976d2; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .auth-box button:hover { background: #1565c0; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <h2>アカウント稼働状況</h2>
-    <div id="status">読み込み中...</div>
+
+    <div class="auth-box">
+        <input type="text" id="name-input" placeholder="自分のユーザー名を入力">
+        <button id="auth-btn">確認</button>
+    </div>
+
+    <div id="status">ステータス確認中...</div>
     <ul id="user-list"></ul>
 </div>
 
 <script>
     const WORKER_URL = "https://tanuinu-accounts-list.hikinikutanuki1.workers.dev";
 
-    // D1の profile_hash と一致するハッシュ値リスト
-　　const HASH_LIST = [
+    const HASH_LIST = [
         "d34f21e44432ff6f781d8476045e7f2776aefb7ccc3fddffe98e9114641a2768",
         "0db42937277576b819a5483ad705db479c90633237ac0a0c6a592e6048396a30",
         "47c827727fb0c8863a9febcecff689edb9e93d970ba0b417b08a4a89f42359db",
@@ -35,7 +49,6 @@
         "a53b46b5fa0d113c8054535c0404a043f5734723700825f0341adbf81cff13b9"
     ];
 
-    // SHA-256計算関数
     async function getSha256(text) {
         const encoder = new TextEncoder();
         const data = encoder.encode(text);
@@ -45,62 +58,35 @@
             .join('');
     }
 
-    async function main() {
-        const statusEl = document.getElementById('status');
+    let workerStatusData = new Map();
+
+    // 画面描画処理（高速化のためDOM操作を分離）
+    async function renderList() {
         const userListEl = document.getElementById('user-list');
-
-        // URLハッシュから生のユーザー名を取得
-        const rawInputName = decodeURIComponent(window.location.hash.replace('#', '').trim());
-        const myInputHash = rawInputName ? await getSha256(rawInputName) : '';
-
-        // ハッシュ値をキーにしてMapを初期化
-        const accountsMap = new Map();
-        HASH_LIST.forEach((hash, index) => {
-            const idNum = String(index + 1).padStart(3, '0');
-            const cleanHash = hash.toLowerCase().trim();
-            
-            const isMatched = (myInputHash !== '' && myInputHash === cleanHash);
-            const displayName = isMatched ? rawInputName : `[匿名アカウント${idNum}]`;
-
-            accountsMap.set(cleanHash, {
-                displayName: displayName,
-                status: 'offline'
-            });
-        });
-
-        // Worker からデータ取得
-        try {
-            const response = await fetch(WORKER_URL);
-            if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-
-            const textData = await response.text();
-            
-            // "profile_hash-online" / "profile_hash-offline" の形式をパース
-            textData.split('\n').forEach(line => {
-                const parts = line.trim().split('-');
-                if (parts.length === 2) {
-                    const hash = parts[0].toLowerCase();
-                    const status = parts[1].toLowerCase();
-                    
-                    if (accountsMap.has(hash)) {
-                        accountsMap.get(hash).status = status;
-                    }
-                }
-            });
-
-            statusEl.textContent = `最終更新: ${new Date().toLocaleTimeString()}`;
-        } catch (error) {
-            console.error(error);
-            statusEl.textContent = 'データの取得に失敗しました。';
+        const nameInput = document.getElementById('name-input');
+        
+        // URLの # 以降から名前を取得
+        const hashName = decodeURIComponent(window.location.hash.replace('#', '').trim());
+        
+        // 入力欄の同期（入力値が変わった場合のみ）
+        if (document.activeElement !== nameInput) {
+            nameInput.value = hashName;
         }
 
-        // DOM描画
+        const myInputHash = hashName ? await getSha256(hashName) : '';
         const fragment = document.createDocumentFragment();
-        accountsMap.forEach(acc => {
+
+        HASH_LIST.forEach((hash) => {
+            const cleanHash = hash.toLowerCase().trim();
+            const isMatched = (myInputHash !== '' && myInputHash === cleanHash);
+            
+            const displayName = isMatched ? hashName : cleanHash;
+            const status = workerStatusData.get(cleanHash) || 'offline';
+            const isOnline = status === 'online';
+
             const li = document.createElement('li');
-            const isOnline = acc.status === 'online';
             li.innerHTML = `
-                <span>${acc.displayName}</span>
+                <span class="${isMatched ? 'matched-name' : 'account-name'}">${displayName}</span>
                 <span class="badge ${isOnline ? 'online' : 'offline'}">
                     ${isOnline ? 'オンライン' : 'オフライン'}
                 </span>
@@ -112,7 +98,60 @@
         userListEl.appendChild(fragment);
     }
 
-    main();
+    // Workerからデータ取得（バックグラウンド非同期処理）
+    async function fetchWorkerData() {
+        const statusEl = document.getElementById('status');
+        try {
+            const response = await fetch(WORKER_URL);
+            if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+
+            const textData = await response.text();
+            workerStatusData.clear();
+
+            textData.split('\n').forEach(line => {
+                const parts = line.trim().split('-');
+                if (parts.length === 2) {
+                    workerStatusData.set(parts[0].toLowerCase(), parts[1].toLowerCase());
+                }
+            });
+
+            statusEl.textContent = `最終更新: ${new Date().toLocaleTimeString()}`;
+            // データ取得完了後に画面再描画
+            renderList();
+        } catch (error) {
+            console.error(error);
+            statusEl.textContent = 'データの取得に失敗しました。';
+        }
+    }
+
+    function init() {
+        // 1. ページ読み込み時に待たせず即時描画（体感速度UP）
+        renderList();
+
+        // 2. バックグラウンドでオンライン状況を取得
+        fetchWorkerData();
+
+        // 3. 【バグ修正】URLのハッシュ(#)が変更されたときに自動更新
+        window.addEventListener('hashchange', () => {
+            renderList();
+        });
+
+        // 4. 入力ボタンおよびEnterキーイベント
+        const nameInput = document.getElementById('name-input');
+        const authBtn = document.getElementById('auth-btn');
+
+        const handleAuth = () => {
+            const currentVal = nameInput.value.trim();
+            window.location.hash = encodeURIComponent(currentVal); // ハッシュ変更によりhashchangeイベントが発火
+        };
+
+        authBtn.addEventListener('click', handleAuth);
+        nameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleAuth();
+        });
+    }
+
+    init();
 </script>
 
 </body>
