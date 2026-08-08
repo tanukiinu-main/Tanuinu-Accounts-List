@@ -5,16 +5,21 @@
     <title>全アカウントの稼働状況</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 20px; }
-        .container { max-width: 700px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        .container { max-width: 800px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
         ul { list-style: none; padding: 0; }
         li { display: flex; justify-content: space-between; align-items: center; padding: 12px; margin-bottom: 8px; background: #2a2a2a; border-radius: 6px; }
         
         .account-name { font-size: 0.85rem; word-break: break-all; font-family: monospace; color: #aaa; }
         .matched-name { color: #4fc3f7; font-weight: bold; font-family: sans-serif; font-size: 1rem; }
 
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #fff; flex-shrink: 0; margin-left: 10px; }
+        .status-container { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: 10px; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold; color: #fff; }
         .online { background: #2e7d32; }
         .offline { background: #c62828; }
+        
+        /* ワールド・インスタンスID表示用スタイル */
+        .world-info { font-size: 0.75rem; background: #333; color: #81c784; padding: 3px 8px; border-radius: 4px; border: 1px solid #455a64; font-family: monospace; }
+
         #status { font-size: 0.85rem; color: #888; margin-bottom: 15px; }
         
         .auth-box { display: flex; gap: 8px; margin-bottom: 20px; }
@@ -60,15 +65,12 @@
 
     let workerStatusData = new Map();
 
-    // 画面描画処理（高速化のためDOM操作を分離）
     async function renderList() {
         const userListEl = document.getElementById('user-list');
         const nameInput = document.getElementById('name-input');
         
-        // URLの # 以降から名前を取得
         const hashName = decodeURIComponent(window.location.hash.replace('#', '').trim());
         
-        // 入力欄の同期（入力値が変わった場合のみ）
         if (document.activeElement !== nameInput) {
             nameInput.value = hashName;
         }
@@ -81,15 +83,23 @@
             const isMatched = (myInputHash !== '' && myInputHash === cleanHash);
             
             const displayName = isMatched ? hashName : cleanHash;
-            const status = workerStatusData.get(cleanHash) || 'offline';
-            const isOnline = status === 'online';
+            
+            // Workerからのレスポンスオブジェクトを取得 { status: 'online', location: 'wrld_xxx:12345' }
+            const accountData = workerStatusData.get(cleanHash) || { status: 'offline', location: '' };
+            const isOnline = accountData.status === 'online';
+
+            // 解読済み かつ パブリックインスタンス情報が存在する場合のみ表示
+            const showWorldInfo = isMatched && isOnline && accountData.location !== '';
 
             const li = document.createElement('li');
             li.innerHTML = `
                 <span class="${isMatched ? 'matched-name' : 'account-name'}">${displayName}</span>
-                <span class="badge ${isOnline ? 'online' : 'offline'}">
-                    ${isOnline ? 'オンライン' : 'オフライン'}
-                </span>
+                <div class="status-container">
+                    <span class="badge ${isOnline ? 'online' : 'offline'}">
+                        ${isOnline ? 'オンライン' : 'オフライン'}
+                    </span>
+                    ${showWorldInfo ? `<span class="world-info">${accountData.location}</span>` : ''}
+                </div>
             `;
             fragment.appendChild(li);
         });
@@ -98,7 +108,6 @@
         userListEl.appendChild(fragment);
     }
 
-    // Workerからデータ取得（バックグラウンド非同期処理）
     async function fetchWorkerData() {
         const statusEl = document.getElementById('status');
         try {
@@ -110,13 +119,16 @@
 
             textData.split('\n').forEach(line => {
                 const parts = line.trim().split('-');
-                if (parts.length === 2) {
-                    workerStatusData.set(parts[0].toLowerCase(), parts[1].toLowerCase());
+                if (parts.length >= 2) {
+                    const hash = parts[0].toLowerCase();
+                    const status = parts[1].toLowerCase();
+                    const location = parts[2] || ''; // 3番目の要素（存在する場合）が location
+                    
+                    workerStatusData.set(hash, { status, location });
                 }
             });
 
             statusEl.textContent = `最終更新: ${new Date().toLocaleTimeString()}`;
-            // データ取得完了後に画面再描画
             renderList();
         } catch (error) {
             console.error(error);
@@ -125,24 +137,19 @@
     }
 
     function init() {
-        // 1. ページ読み込み時に待たせず即時描画（体感速度UP）
         renderList();
-
-        // 2. バックグラウンドでオンライン状況を取得
         fetchWorkerData();
 
-        // 3. 【バグ修正】URLのハッシュ(#)が変更されたときに自動更新
         window.addEventListener('hashchange', () => {
             renderList();
         });
 
-        // 4. 入力ボタンおよびEnterキーイベント
         const nameInput = document.getElementById('name-input');
         const authBtn = document.getElementById('auth-btn');
 
         const handleAuth = () => {
             const currentVal = nameInput.value.trim();
-            window.location.hash = encodeURIComponent(currentVal); // ハッシュ変更によりhashchangeイベントが発火
+            window.location.hash = encodeURIComponent(currentVal);
         };
 
         authBtn.addEventListener('click', handleAuth);
