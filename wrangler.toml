@@ -1,3 +1,10 @@
+name = "tanuinu-accounts-list"
+compatibility_date = "2026-08-08"
+
+# メインとなるJS（またはTS）ファイルのパスを指定します
+# ※ ファイルが src ディレクトリ内にある場合は "src/index.js" に書き換えてください
+main = "index.js"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "vrchat-status-db"
